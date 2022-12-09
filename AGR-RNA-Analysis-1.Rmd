@@ -1,0 +1,2140 @@
+---
+title: "RNAseq analysis of wheat leaf asymptomatic green region during yellow spot infection"
+author: "Paula Moolhuijzen"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+
+```{r path, echo=FALSE, message=F, warning=F}
+
+setwd(getwd())
+
+```
+
+
+```{r load, echo=FALSE, message=FALSE, warning=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(genefilter)
+library(gplots)
+library(pheatmap)
+library("dplyr")
+library(pca3d)
+library(ggfortify)
+library("Hmisc")
+library(corrplot)
+library(reshape2)
+library("ggVennDiagram")
+library(topGO)
+library("ggpubr")
+library(stringr)
+library(biomaRt)
+library(RColorBrewer)
+library(data.table)
+library("VennDiagram")
+library("tibble")
+```
+
+### Simple contrasts Yellow Spot infection of wheat (takes about 15 minutes)
+
+For the contrasts genes are significant differential expressed (DE) at padj <= 0.005 & abs(log2FoldChange) >= 2
+
+```{r norm, echo=FALSE, message=FALSE, warning=FALSE}
+
+meta <- read.table("meta", sep="\t", header = TRUE)
+
+mat <- read.table("matrix", sep="\t", header = TRUE, row.names=1)
+meta$group <- factor(paste0(meta$cultivar, meta$inoculated, meta$treatment, meta$dpi))
+
+data <- DESeqDataSetFromMatrix(countData=mat, colData=meta, design = ~group )
+
+suppressMessages(
+dds <- DESeq(data)
+)
+
+norm.counts <- counts(dds, normalized=TRUE)
+norm.counts <- log2(norm.counts + 1)
+
+```
+
+
+Plots for mapped read count per sample
+
+```{r readCount, fig.cap = "Sample read count", echo=FALSE}
+
+sampColor <- c("Scout"="red", "Magenta"="blue")
+
+## Add a column to the pheno type to specify the color of each sample according to its genotype
+meta$color[meta$cultivar == "Scout"] <- sampColor["Scout"]
+meta$color[meta$cultivar == "Magenta"] <- sampColor["Magenta"]
+
+pdf(file="sample-reads-count.pdf")
+
+bpt <- barplot(colSums(mat)/1000000, 
+               main="Total no. reads per sample (million)",
+               col=meta$color, 
+               las=1,  horiz=TRUE,
+               ylab="Samples", cex.names=0.4,
+               xlab="Million counts")
+
+dev.off()
+
+```
+
+```{r vst, echo=FALSE, message=FALSE, warning=FALSE}
+vst <- vst(data, blind = FALSE)
+
+mat.a <- assay(vst)
+mat.a <- limma::removeBatchEffect(mat.a, vst$batch)
+assay(vst) <- mat.a
+
+```
+
+### PCA plots 
+
+```{r elipPCA, fig.cap = "PCA plot", echo=FALSE, message=FALSE, warning=FALSE, fig.height=10, fig.width=12}
+
+set <-  colorRampPalette(brewer.pal(7, "Paired"))(14)
+
+pdf("PCA-elip.pdf", height = 10, width=12)
+
+pcaData <- plotPCA(vst, intgroup = c("cultivar","inoculated", "batch"), returnData = TRUE, ntop = 2000)
+percentVar <- round(100 * attr(pcaData, "percentVar")) 
+
+
+p <- ggplot(pcaData, aes(x = PC1, y = PC2,  color=group,  label=name)) + 
+  geom_point(size =3) + 
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) + 
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+  ggtitle("PCA, variance stabilised") +
+   theme(panel.grid = element_blank(), panel.border = element_rect(fill= "transparent"),
+        axis.text=element_text(size=16), #text=element_text(family="Calibri"),
+        axis.title=element_text(size=18, face="bold"), 
+        legend.text=element_text(size=18), legend.title=element_text(size=18, face="bold"),
+        strip.text = element_text(size = 16, face = "bold")) +
+  scale_fill_manual(values = set) 
+
+p + stat_ellipse(geom="polygon", aes(fill = group), alpha = 0.2, show.legend = FALSE, level = 0.95) 
+
+dev.off()
+
+```
+
+```{r threeDimPCA, echo=FALSE, fig.width=12, fig.height=10}
+rv <- rowVars(assay(vst))
+
+select <- head(order(rv, decreasing=TRUE), 5000)
+
+pca <- prcomp(t(assay(vst)[select,]))
+
+pca3d(pca, components = 1:3, group=meta$group, show.ellipses=TRUE, ellipse.ci=0.70, show.plane=FALSE, legend="bottomright", show.scale=FALSE, show.centroids=TRUE,show.group.labels=FALSE)
+
+snapshotPCA3d("Treatment.png")
+
+```
+
+```{r twoDimPCA, echo=FALSE, warning=FALSE}
+pdf("PCA-2d.pdf", height = 10, width=16)
+
+pca2d(pca, group=meta$group, legend="bottomright", show.centroids = TRUE, show.group.labels=FALSE) 
+
+dev.off()
+```
+
+```{r culttreatPCA, fig.cap = "PCA plot", echo=FALSE, warning=FALSE}
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(23)
+
+pdf("PCA-cultivar-treatment.pdf", width = 12, height = 10)
+
+pcaData <- plotPCA(vst, intgroup = c("cultivar","inoculated"), returnData = TRUE, ntop = 2000)
+percentVar <- round(100 * attr(pcaData, "percentVar")) 
+
+
+ggplot(pcaData, aes(x = PC1, y = PC2,  color = group, fill=group, label=name)) +
+geom_point(size =3 ) + 
+
+xlab(paste0("PC1: ", percentVar[1], "% variance")) + 
+ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+ggtitle("PCA, variance stabilised") + 
+  scale_fill_manual(values = set) +
+  guides(fill=guide_legend(title="Cultivar:Ptr inoculated"))
+
+dev.off()
+```
+
+```{r , fig.cap = "PCA plot", echo=FALSE, warning=FALSE}
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(12)
+
+pdf("PCA.pdf", width = 10, height = 8)
+
+pcaData <- plotPCA(vst, intgroup = c("cultivar","inoculated"), returnData = TRUE, ntop = 2000)
+percentVar <- round(100 * attr(pcaData, "percentVar")) 
+
+ggplot(pcaData, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size=4) + 
+  theme(axis.text=element_text(size=18), text=element_text(size = 18),
+        axis.title=element_text(size=20, face="bold"), 
+        legend.text=element_text(size=16), legend.title=element_text(size=18),
+        strip.text = element_text(size = 16, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90"),
+        legend.position = "right", panel.border = element_rect(fill = NA)) +
+  scale_color_discrete(name="Group") +
+xlab(paste0("PC1: ", percentVar[1], "% variance")) + 
+ylab(paste0("PC2: ", percentVar[2], "% variance")) + 
+ggtitle("PCA, variance stabilised") + 
+  scale_fill_manual(values = set)
+
+dev.off()
+```
+
+### Contrast analysis
+
+ 1. Contrast Scout control versus Inoculated 3 dpi No fungicide - Group I
+
+```{r groupI,echo=FALSE, message=FALSE}
+
+res <- results(dds, contrast=c("group", "ScoutInoculatedNo_fungicide3" , "ScoutControlNo_fungicide3"))
+sin3.scn3 <- subset(res, (padj <= 0.005 & !is.na(pvalue))& abs(log2FoldChange) >= 2 ) 
+I <- data.frame(sin3.scn3)
+I$Group <- "I"
+I$Gene <- row.names(I)
+```
+
+ 2. Contrast Scout control versus inoculated 6 dpi No fungicide - Group II
+
+```{r groupII, echo=FALSE, message=FALSE}
+
+res <- results(dds, contrast=c("group", "ScoutInoculatedNo_fungicide6" , "ScoutControlNo_fungicide6"))
+sin6.scn6 <- subset(res, (padj <= 0.005 & !is.na(pvalue))& abs(log2FoldChange) >= 2 )
+II <- data.frame(sin6.scn6)
+II$Group <- "II"
+II$Gene <- row.names(II)
+```
+
+ 3. Contrast Scout control versus Inoculated 8 dpi No fungicide - Group III
+
+```{r groupIII, echo=FALSE, message=FALSE}
+
+res <- results(dds, contrast=c("group", "ScoutInoculatedNo_fungicide8" , "ScoutControlNo_fungicide8"))
+sin8.scn8 <- subset(res, (padj <= 0.005 & !is.na(pvalue))& abs(log2FoldChange) >= 2 )
+III <- data.frame(sin8.scn8)
+III$Group <- "III"
+III$Gene <- row.names(III)
+```
+
+ 4. Contrast Scout control fungicide versus Inoculated fungicide 6 dpi Group IV
+ 
+```{r groupIV, echo=FALSE}
+x <- results(dds, contrast=c("group", "ScoutInoculatedFungicide6" , "ScoutControlFungicide6"))
+sif6.scf6 <- subset(x, (padj <= 0.005 & !is.na(pvalue))& abs(log2FoldChange) > 2 ) 
+IV <- data.frame(sif6.scf6)
+IV$Group <- "IV"
+IV$Gene <- row.names(IV)
+```
+
+ 5. Contrast Scout control fungicide versus Inoculated fungicide 8 dpi Group V
+ 
+```{r groupV, echo=FALSE}
+x <- results(dds, contrast=c("group", "ScoutInoculatedFungicide8" , "ScoutControlFungicide8"))
+sif8.scf8 <- subset(x, (padj <= 0.005 & !is.na(pvalue))& abs(log2FoldChange) > 2 ) 
+V <- data.frame(sif8.scf8)
+V$Group <- "V"
+V$Gene <- row.names(V)
+```
+
+ 6. Contrast Magneta Control versus Inoculated 3 dpi No fungicide - Group VI
+
+```{r groupVI, echo=FALSE, message=FALSE}
+n <- list()
+res <- results(dds, contrast=c("group", "MagentaInoculatedNo_fungicide3" , "MagentaControlNo_fungicide3"))
+min3.mcn3 <- subset(res, (padj <= 0.005 & !is.na(pvalue))& abs(log2FoldChange) >= 2 ) 
+VI <- data.frame(min3.mcn3)
+VI$Group <- "VI"
+VI$Gene <- row.names(VI)
+```
+
+ 7. Contrast Magneta Control versus Inoculated 8 dpi No fungicide - Group VII
+
+```{r groupVII, echo=FALSE, message=FALSE}
+res <- results(dds, contrast=c("group", "MagentaInoculatedNo_fungicide8" , "MagentaControlNo_fungicide8"))
+min8.mcn8 <- subset(res, (padj <= 0.005 & !is.na(pvalue))& abs(log2FoldChange) >= 2 )
+VII <- data.frame(min8.mcn8)
+VII$Group <- "VII"
+VII$Gene <- row.names(VII)
+```
+
+
+```{r join, echo=FALSE}
+tlist <- list(
+ "I"=I,
+ "II"=II, 
+ "III"=III,
+ "IV"=IV,
+ "V"=V,
+ "VI"=VI,
+ "VII"=VII)
+
+tab <- rbindlist(tlist,use.names=TRUE)
+
+```
+
+
+### Table of regulation 
+
+```{r tableReg, fig.height=6, fig.width=10, echo=FALSE}
+
+dat <- tab[log2FoldChange>0, .N, by = .(Group)][tab[log2FoldChange<0, .N, by =.(Group)] , on = c("Group"), nomatch=0]
+
+colnames(dat)[2] <- "Induced"
+colnames(dat)[3] <- "Suppressed" 
+dat2 <- as.matrix(dat[,-1])
+rownames(dat2) <- dat$Group
+
+longData<- reshape2::melt(dat2) #melt(dat2)
+h<- ggplot(longData, aes(y = Var2, x = Var1)) + 
+  geom_raster(aes(fill=value)) + 
+  scale_fill_gradient(low="grey90", high="red", guide = "none") +
+  geom_text(aes(label = round(value, 1)), size=10) +
+  labs(y="SDEG Regulation", x="Group") +
+  theme(axis.text=element_text(size=24), text=element_text(family="Calibri", size = 20),
+        axis.title=element_text(size=28, face="bold"),
+        strip.text = element_text(size = 20, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90")) 
+  
+ggsave(h, file="Figure3C-SDEG.png", width=10, height=6)
+
+```
+
+### Venn diagrams
+Induced Venn
+
+```{r inducedVenn, echo=FALSE}
+
+I <- subset(tab, (Group == "I") & (log2FoldChange) >= 1)
+I <- I$Gene
+II <- subset(tab, (Group == "II") & (log2FoldChange) >= 1)
+II <- II$Gene
+III <- subset(tab, (Group == "III") & (log2FoldChange) >= 1)
+III <- III$Gene
+IV <- subset(tab, (Group == "IV") & (log2FoldChange) >= 1)
+IV <- IV$Gene
+V <- subset(tab, (Group == "V") & (log2FoldChange) >= 1)
+V <- V$Gene
+VI <- subset(tab, (Group == "VI") & (log2FoldChange) >= 1)
+VI <- VI$Gene
+VII <- subset(tab, (Group == "VII") & (log2FoldChange) >= 1)
+VII <- VII$Gene
+
+Group_I_II_III = c(I, II, III)
+Group_IV_V = c(IV, V)
+Group_VI_VII = c(VI, VII)
+
+```
+
+
+```{r inducedGroup, fig.height=10, fig.width=10, echo=FALSE}
+
+vdeu <- list(
+  "I_II_III"= Group_I_II_III,
+  "IV_V"= Group_IV_V,
+  "VI_VII" = Group_VI_VII
+  )
+
+pdf(file="venn-diagram-up-bulk-groups.pdf", width=10, height=10)
+ggVennDiagram(vdeu, label="both",lwd = 0.3, lty = 1, color = "grey",  label_alpha = 0, edge_size = 0.3, label_size = 12, set_size = 12) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  theme(legend.position = "none", title=element_text(size=28), plot.title = element_text(hjust = 0.5)) +
+  labs(title="Induced SDEGs")
+   
+dev.off()
+```
+
+
+Suppressed Venn
+
+```{r supVenn, fig.height=10, fig.width=10, echo=FALSE}
+
+I <- subset(tab, (Group == "I") & (log2FoldChange) < 1)
+I <- I$Gene
+II <- subset(tab, (Group == "II") & (log2FoldChange) < 1)
+II <- II$Gene
+III <- subset(tab, (Group == "III") & (log2FoldChange) < 1)
+III <- III$Gene
+IV <- subset(tab, (Group == "IV") & (log2FoldChange) < 1)
+IV <- IV$Gene
+V <- subset(tab, (Group == "V") & (log2FoldChange) < 1)
+V <- V$Gene
+VI <- subset(tab, (Group == "VI") & (log2FoldChange) < 1)
+VI <- VI$Gene
+VII <- subset(tab, (Group == "VII") & (log2FoldChange) < 1)
+VII <- VII$Gene
+
+Group_I_II_III = c(I, II, III)
+Group_IV_V = c(IV, V)
+Group_VI_VII = c(VI, VII)
+
+```
+
+
+```{r groupVenn, fig.height=10, fig.width=10, echo=FALSE}
+
+vded <- list(
+  "I_II_III"= Group_I_II_III,
+  "IV_V"= Group_IV_V,
+  "VI_VII" = Group_VI_VII
+  )
+
+
+pdf(file="venn-diagram-down-bulk-groups.pdf", width=10, height=10)
+ggVennDiagram(vded, label="both",lwd = 0.3, lty = 1, color = "grey",  label_alpha = 0, edge_size = 0.3, label_size = 12, set_size = 12) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  theme(legend.position = "none", title=element_text(size=28), plot.title = element_text(hjust = 0.5)) +
+  labs(title="Suppressed SDEGs")
+   
+
+dev.off()
+```
+
+
+
+### GO biomaRt
+
+```{r loadBiomart}
+library(biomaRt)
+library(stringr)
+```
+
+```{r, warning=FALSE}
+mart <- useMart("plants_mart", host = "plants.ensembl.org")
+```
+
+```{r}
+listEnsembl(mart)
+```
+
+BioMart and Paths
+
+```{r}
+tmart=useDataset("taestivum_eg_gene", mart = mart)
+```
+
+Run to download all gene GO ids - (converted to geneid2go.map.txt format with slurp-topgo.pl)
+```{r downloadGO, echo=FALSE}
+#Get all gene ids and go ids
+
+#geneid2go.map <- getBM(attributes = c("ensembl_gene_id","go_id"), mart = tmart)
+
+#write.table(geneid2go.map, file="geneid2go.txt", sep="\t", col.names=FALSE, row.names=FALSE)
+
+#geneid2go.map <- setNames(split(geneid2go.map$go_id, seq(nrow(geneid2go.map))), geneid2go.map$ensembl_gene_id)
+```
+
+
+### GO analyses for SDEGs
+
+GO term enrichment for significantly DE genes are significant at  p-value < 0.01
+Reading in data for all wheat gene ids mapped to Gene Ontologies (GO)
+```{r readGO, echo=FALSE, message=FALSE}
+
+geneid2go <- readMappings(file = "geneid2go.map.txt", sep="\t")
+
+geneNames <- names(geneid2go)
+
+```
+
+https://support.bioconductor.org/p/29775/
+
+ The SDEG lists for all contrasts - TopGo analysis - run time is around 10 mins
+ 
+```{r topGO, echo=FALSE, warning=FALSE, message=FALSE}
+dflist <- list("GroupI"=sin3.scn3,
+               "GroupII"=sin6.scn6, 
+               "GroupIII"=sin8.scn8,
+               "GroupIV"=sif6.scf6,
+               "GroupV"=sif8.scf8,
+               "GroupVI"=min3.mcn3,
+               "GroupVII"=min8.mcn8)
+               
+glist <-c("MF","BP","CC")
+
+cnt=0
+b=0
+l <- list()
+
+for(e in dflist){
+  cnt=cnt+1
+  nm<- names(dflist[cnt])
+
+  deup <- factor(as.vector(row.names(subset(e, log2FoldChange >= 1))))
+  ded <- factor(as.vector(row.names(subset(e, log2FoldChange <= -1))))
+
+  geneListUP <- factor(as.integer(geneNames %in% deup))
+  names(geneListUP) <- geneNames
+  
+  geneListD <- factor(as.integer(geneNames %in% ded))
+  names(geneListD) <- geneNames
+
+  for(go in glist){
+    b=b+1
+    
+    # GO analysis for  up-regulated SDEGs
+    suppressMessages(
+    sampleGOup <- new("topGOdata", ontology = go, allGenes = geneListUP,
+              geneSel = deup, nodeSize = 5,
+              annot = annFUN.gene2GO, gene2GO = geneid2go)
+    )
+    
+    allGO.up = genesInTerm(sampleGOup)
+    
+      resultFisher <- runTest(sampleGOup, algorithm = "weight01", statistic = "fisher")
+      
+      induced <- GenTable(sampleGOup, weightFisher = resultFisher, orderBy='weightFisher',
+                          topNodes = length(resultFisher@score), numChar = 120)
+ 
+
+    induced$weightFisher <- gsub( "< ", "", as.character(induced$weightFisher))
+    induced$weightFisher <- as.numeric(induced$weightFisher)
+    induced.p= induced[which(induced$weightFisher<=0.01),]
+
+    induced.p$reg[induced.p$weightFisher <=0.01] <- "Induced"
+
+    # get the gene lists
+    AnnotatedGenes.u = lapply(induced.p$GO.ID, function(x) as.character(unlist(genesInTerm(object = sampleGOup, whichGO = x))))
+    
+    # GO analysis for the down-regulated SDEGs 
+    suppressMessages(
+    sampleGOdwn <- new("topGOdata", ontology = go, allGenes = geneListD,
+              geneSel = ded,
+              annot = annFUN.gene2GO, gene2GO = geneid2go)
+    )
+    
+    allGO.dwn = genesInTerm(sampleGOdwn)
+      
+    resultFisher <- runTest(sampleGOdwn, algorithm = "weight01", statistic = "fisher")
+    
+    supress <- GenTable(sampleGOdwn, weightFisher = resultFisher, orderBy='weightFisher',
+                  topNodes = length(resultFisher@score), numChar = 150)
+
+
+    supress$weightFisher <- gsub( "< ", "", as.character(supress$weightFisher))
+    supress$weightFisher <- as.numeric(supress$weightFisher)
+    supress.p= supress[which(supress$weightFisher<=0.01),]
+
+    supress.p$reg[supress.p$weightFisher <=0.01] <- "Supressed"
+
+    new <- rbind(supress.p, induced.p)
+  
+    # get the gene lists
+    AnnotatedGenes.d = lapply(supress.p$GO.ID, function(x) as.character(unlist(genesInTerm(object = sampleGOdwn, whichGO = x))))
+
+    new$reg <- factor(new$reg, levels = c("Induced", "Supressed"),
+                          labels = c("Induced", "Supressed"))
+
+    new$godomain <- go
+    new$godomain <- factor(new$godomain,  levels = c(go),
+                    labels = c(go))
+    
+    new$genotype <- nm
+    
+
+    new$Term = str_wrap(new$Term, width = 50)
+
+    l[[b]] <-new
+   
+  }
+    
+}
+
+```
+
+
+ Bind all GO for SDEGs
+
+```{r bindGO, echo=FALSE, message=F, warning=F, fig.width=10, fig.height=12}
+
+go <- rbindlist(l,use.names=TRUE)
+colnames(go)[7] <- "Regulation"
+colnames(go)[9] <- "Group"
+
+
+go$Group[go$Group == "GroupI"] <- "I"
+go$Group[go$Group == "GroupII"] <- "II"
+go$Group[go$Group == "GroupIII"] <- "III"
+go$Group[go$Group == "GroupIV"] <- "IV"
+go$Group[go$Group == "GroupV"] <- "V"
+go$Group[go$Group == "GroupVI"] <- "VI"
+go$Group[go$Group == "GroupVII"] <- "VII"
+
+write.table(go, file="group-go-results.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+
+```
+
+
+Biological processes Figure 3D groups I-VII
+
+```{r bp, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=14}
+
+bp <- subset(go, go$godomain == "BP")
+bp <- subset(bp, bp$Term != "metabolic process")
+
+bp.bar <- list("photosynthesis",
+"calcium ion binding",
+"chitin catabolic process",
+"ethylene-activated signaling pathway",
+"fatty acid biosynthetic process",
+"L-phenylalanine catabolic process",
+"lipid transport",
+"microtubule-based movement",
+"oligopeptide transport",
+"protein metabolic process",
+"recognition of pollen",
+"regulation of systemic acquired resistance",
+"response to hormone",
+"response to stress",
+"translation",
+"zinc ion transmembrane transport")
+
+bp <- subset(bp, bp$weightFisher < 1e-04)
+bp <- subset(bp, bp$Term %in% bp.bar)
+
+#meta$ratio <- meta$Significant/meta$Annotated
+len <- length(unique(bp$Term))
+bp$Term = str_wrap(bp$Term,20)
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(len)
+
+r <- ggplot(bp, aes(Group)) + 
+    theme(axis.text=element_text(size=26), text=element_text(family="Calibri"),
+        axis.title=element_text(size=28, face="bold"), 
+        legend.text=element_text(size=26), legend.title=element_text(size=26, face="bold"),
+        strip.text = element_text(size = 2, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90"), legend.position = "right", panel.border = element_rect(fill = NA)) +
+ geom_bar(position="stack", data = subset(bp, Regulation == "Induced"), 
+          aes(y = Significant, fill = Term), stat = "identity") +
+  geom_bar(position="stack", data = subset(bp, Regulation == "Supressed"), 
+           aes(y = -Significant, fill = Term), stat = "identity") + xlab("Group") + ylab("Number of Significant DE genes") +
+  guides(fill=guide_legend(nrow=len, title="GO biological process")) + geom_hline(yintercept = 0,colour = "grey90") + scale_fill_manual(values = set)
+  
+
+r 
+
+ggsave(r, file="figure3D-manuscript-BP-go.png", width=8, height=14)
+
+
+```
+
+
+Cellular components Figure 3F groups I-VII
+
+```{r cc, echo=FALSE, message=F, warning=F, fig.width=8, fig.height=14}
+
+cc <- subset(go, go$godomain == "CC")
+
+
+#cc.bar <- list( "")
+
+cc <- subset(cc, cc$weightFisher < 1e-04)
+
+len=12
+cc$Term = str_wrap(cc$Term,20)
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(len)
+
+s <- ggplot(cc, aes(Group)) + 
+    theme(axis.text=element_text(size=26), text=element_text(family="Calibri"),
+        axis.title=element_text(size=28, face="bold"), 
+        legend.text=element_text(size=26), legend.title=element_text(size=26, face="bold"),
+        strip.text = element_text(size = 26, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90"), legend.position = "right", panel.border = element_rect(fill = NA)) +
+ geom_bar(position="stack", data = subset(cc, Regulation == "Induced"), 
+          aes(y = Significant, fill = Term), stat = "identity") +
+  geom_bar(position="stack", data = subset(cc, Regulation == "Supressed"), 
+           aes(y = -Significant, fill = Term), stat = "identity") + xlab("Group") + ylab("Number of Significant DE genes") +
+  guides(fill=guide_legend(nrow=len, title="GO cellular component")) + geom_hline(yintercept = 0,colour = "grey90") + scale_fill_manual(values = set)
+  
+
+s 
+
+ggsave(s, file="figure3E-manuscript-CC-go.png", width=8, height=14)
+
+```
+
+ Molecular functions Figure 3F groups I-VII
+
+```{r mf, echo=FALSE, message=F, warning=F, fig.width=8, fig.height=14}
+
+mf <- subset(go, go$godomain == "MF")
+#mf <- subset(mf, mf$Term != "metabolic process")
+
+mf.bar <- list(
+"calcium ion binding",
+"DNA-binding transcription factor activity",
+"iron ion binding",
+"oxidoreductase activity",
+"peroxidase activity",
+"polysaccharide binding",
+"protein serine/threonine kinase activity",
+"sequence-specific DNA binding",
+"terpene synthase activity",
+"transporter activity",
+"zinc ion transmembrane transporter activity"
+)
+
+mf <- subset(mf, mf$weightFisher < 1e-04)
+mf <- subset(mf, mf$Term %in% mf.bar)
+
+#meta$ratio <- meta$Significant/meta$Annotated
+#len <- length(unique(mf$Term))
+len=12
+mf$Term = str_wrap(mf$Term,20)
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(len)
+
+t <- ggplot(mf, aes(Group)) + 
+    theme(axis.text=element_text(size=26), text=element_text(family="Calibri"),
+        axis.title=element_text(size=28, face="bold"), 
+        legend.text=element_text(size=26), legend.title=element_text(size=26, face="bold"),
+        strip.text = element_text(size = 26, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90"), legend.position = "right", panel.border = element_rect(fill = NA)) +
+ geom_bar(position="stack", data = subset(mf, Regulation == "Induced"), 
+          aes(y = Significant, fill = Term), stat = "identity") +
+  geom_bar(position="stack", data = subset(mf, Regulation == "Supressed"), 
+           aes(y = -Significant, fill = Term), stat = "identity") + xlab("Group") + ylab("Number of Significant DE genes") +
+  guides(fill=guide_legend(nrow=len, title="GO moleuclar function")) + geom_hline(yintercept = 0,colour = "grey90") + scale_fill_manual(values = set)
+  
+
+t 
+
+ggsave(t, file="figure3F-manuscript-MF-go.png", width=8, height=14)
+
+```
+
+### Heatmaps for selected defence related SDEGs in manuscript table
+ Interpro information
+
+```{r interproSub, echo=FALSE, message=FALSE}
+dflist <- list("GroupI"=sin3.scn3, 
+               "GroupII"=sin6.scn6, 
+               "GroupIII"=sin8.scn8, 
+               "GroupIV"=sif6.scf6, 
+               "GroupV"=sif8.scf8, 
+               "GroupVI"=min3.mcn3, 
+               "GroupVII"=min8.mcn8
+              )
+
+cnt=0
+b=0
+l <- list()
+for(e in dflist){
+  cnt=cnt+1
+  nm<- names(dflist[cnt])
+  
+  e$Group <- nm
+  
+  g <- as.vector(row.names(e))
+
+  ga <- getBM(attributes = c("ensembl_gene_id", "description","interpro", "interpro_description"), 
+                     filters = "ensembl_gene_id", values = g, mart = tmart)
+ 
+ e<-as.data.frame(e)
+ ega <- merge(x=e, y=ga, by.x=0, by.y="ensembl_gene_id", all=TRUE)
+ 
+  l[[cnt]] <-ega
+}
+
+
+```
+
+
+write interpro annotation for SDEGs
+```{r interproTable, echo=FALSE, message=FALSE}
+
+ipro <- rbindlist(l,use.names=TRUE)
+write.table(ipro, file="significant-genes-IPR.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+
+```
+
+
+```{r interproSubset, echo=FALSE, message=FALSE}
+
+i <- list("NB.ARC"="IPR002182", "Leucine.rich.repeat"="IPR001611", "Mlo"="IPR004326", 
+          "ABC.transporter"="IPR003439", "Sugar.Transporter"="IPR005828", 
+          "Glucasyltransferase"= "IPR002213", "Heme.peroxidase"="IPR002016",
+          "Eythlene.responsive.tf"="IPR044808","AIB.MYC.like.tf"="IPR045084",
+          "WRKY.domain"="IPR003657","AP2.ERF.tf"="IPR017392",
+          "bHLH.tf"="IPR031066","MYC.MYB.N.terminal.tf"="IPR025610",
+          "Glutathione.S.transferase.N"="IPR004045","PR.14.IPR"="IPR000528",
+          "PR.16.Germin"="IPR001929", "PR.17.IPR"="IPR007541")
+
+iprof <- ipro[interpro %chin% i]
+iprof$FC[iprof$log2FoldChange >= 1] <- "Induced"
+iprof$FC[iprof$log2FoldChange < 0] <- "Suppressed"
+```
+
+write SDEGs interpro annotation for subset of defence related terms
+```{r, echo=FALSE}
+
+# Adds readable IPR group label
+cnt = 0
+for(e in i){
+
+  cnt=cnt+1
+  iprof[interpro %in% e] ~ names(i[cnt])
+iprof$IPR[iprof$interpro %in% e] <- names(i[cnt])
+iprof$Id[iprof$interpro %in% e] <- i[cnt]
+}
+
+tmp <- as.data.frame(iprof)
+tmp <- subset(tmp, select = -c(Id))
+write.table(tmp, file="significant-genes-subset-IPR.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+```
+
+ GO information
+
+```{r GO, echo=FALSE, message=FALSE}
+dflist <- list("GroupI"=sin3.scn3, 
+               "GroupII"=sin6.scn6, 
+               "GroupIII"=sin8.scn8, 
+               "GroupIV"=sif6.scf6, 
+               "GroupV"=sif8.scf8, 
+               "GroupVI"=min3.mcn3, 
+               "GroupVII"=min8.mcn8
+              )
+
+cnt=0
+b=0
+l <- list()
+for(e in dflist){
+  cnt=cnt+1
+  nm<- names(dflist[cnt])
+  
+  e$Group <- nm
+  
+  g <- as.vector(row.names(e))
+  
+  ga <- getBM(attributes = c("ensembl_gene_id", "description","go_id", "name_1006", "namespace_1003"), 
+                     filters = "ensembl_gene_id", values = g, mart = tmart)
+ 
+ e<-as.data.frame(e)
+ ega <- merge(x=e, y=ga, by.x=0, by.y="ensembl_gene_id", all=TRUE)
+
+ 
+ l[[cnt]] <-ega
+ 
+}
+
+```
+
+write GO annotation for SDEGs
+```{r tableGO, echo=FALSE, message=FALSE}
+
+gos <- rbindlist(l,use.names=TRUE)
+gos$FC[gos$log2FoldChange >= 1] <- "Induced"
+gos$FC[gos$log2FoldChange < 0] <- "Suppressed"
+write.table(gos, file="significant-genes-GO.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+
+```
+
+
+```{r subsetGO, echo=FALSE, message=FALSE}
+
+gi <- list("Trancription.factors"="GO:0006355", "Protien.kinase"="GO:0004672", 
+           "Defence"="GO:0006952",
+           "Transporter"="GO:0055085",
+           "SA.bp"="GO:0009697",       # Salicylic acid (SA) biosynthetic processes
+           "JA.bp"="GO:0009695",       # jasmonic acid (JA) biosynthetic processe
+           "ET.asp"="GO:0009873",      # ethylene (ET) activated signalling pathway
+           "JA.msp"="GO:0009867",      # JA mediated signalling pathway
+           "JA.ET.dsr"="GO:0009861",   # JA and ET-dependent systemic resistance
+           "SAR.SA.msp"="GO:0009862")  # systemic acquired resistance involving SA-mediated signalling pathways
+
+gosf <- gos[go_id %chin% gi ]
+gosf$FC[gosf$log2FoldChange >= 1] <- "Induced"
+gosf$FC[gosf$log2FoldChange < 0] <- "Suppressed"
+write.table(gosf, file="significant-genes-subset-GO.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+```
+
+write SDEG GO annotation for subset of defence terms
+```{r, echo=FALSE}
+
+# Adds readable GO label
+cnt = 0
+for(e in gi){
+
+  cnt=cnt+1
+  gosf[go_id %in% e] ~ names(gi[cnt])
+gosf$GO[gosf$go_id %in% e] <- names(gi[cnt])
+gosf$ID[gosf$go_id %in% e] <- gi[cnt]
+}
+tmp <- as.data.frame(gosf)
+tmp <- subset(tmp, select = -c(ID))
+write.table(tmp, file="significant-genes-subset-GO-label.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+```
+
+
+heatmap filtered GO
+
+```{r , fig.cap="Effect of treatment in Susceptible ", echo=FALSE, fig.width=10, fig.height=12 }
+
+go  <- norm.counts[ gosf$Row.names, ]
+
+go.sum <- t(apply(go, 1, function(row) c(mean(row[c(1,12,23,42,43,44)]),  #SCN3 GroupI
+                                         mean(row[c(34,37,38,45,46,47)]), #SIN3 GroupI
+                                         mean(row[c(11,13,27,60,61,74)]), #SCN8 GroupIII
+                                         mean(row[c(15,16,17,63,64,65)]), #SIN8 GroupIII
+                                         mean(row[c(24,25,26,71,72,73)]), #MCN3 GroupVI
+                                         mean(row[c(14,28,29,62,75,76)]), #MIN3 GroupVI
+                                         mean(row[c(30,31,32,77,78,79)]), #MCN8 GroupVII
+                                         mean(row[c(33,35,36,80,81,82)]) #MIN8 GroupVII
+                                         )))
+
+go.sum  <- go.sum - rowMeans(go.sum)
+
+colnames(go.sum) <- c("SCN3", "SIN3","SCN8", "SIN8", "MCN3", 
+                      "MIN3", "MCN8", "MIN8")
+
+anno <- as.data.frame(colData(dds)[, c( "cultivar", "inoculated", "treatment", "dpi")])
+
+ x <- c("Scout", "Scout", "Scout", "Scout", "Magenta", 
+        "Magenta","Magenta", "Magenta" )
+ 
+ y <- colnames(go.sum)
+ 
+ z <- c("Control","Inoc.", "Control",
+        "Inoc.","Control","Inoc.","Control", "Inoc.")
+ 
+anno <- data.frame("cultivar" = x, "ptr"= z, row.names=y)
+
+anno$dpi <- c("3d","3d","8d","8d","3d","3d","8d","8d" )
+
+
+gosf <- gosf %>% dplyr::rename(Gene = 1)
+annor <- as.data.frame(gosf[,c( "Gene", "GO")])
+
+
+#Remove duplicates 
+ clean_data <- annor %>% 
+  dplyr::group_by(Gene) %>% 
+  dplyr::summarise(GO = paste0(unique(GO), collapse = "_"))
+
+
+clean_data <- as.data.frame(clean_data$GO, row.names=clean_data$Gene)
+clean_data <- clean_data %>% dplyr::rename(GO = 1)
+
+clean_data$GO[clean_data$GO == "Protien.kinase_Defence"] <- "Defence_Protien.kinase"
+
+#
+go.sum.u <- unique(go.sum)
+
+# set colors for row
+len <- length(unique(clean_data$GO))
+set <-  colorRampPalette(brewer.pal(5, "Set1"))(len)
+names <- sort(unique(clean_data$GO))
+names(set) <- names
+
+
+
+# Specify colors
+ann_colors <- list(
+    cultivar = c(Scout="firebrick",Magenta="blue"),
+    ptr = c(Control = "#1B9E77", Inoc. = "#D95F02"),
+    dpi = c("3d" = "#7570B3", "8d" = "#E7298A"),
+    GO = set )
+
+pheatmap(go.sum.u,  annotation_col = anno, annotation_row = clean_data, fontsize_col = 12, fontsize_row = 12, show_rownames=F, show_colnames=TRUE, cluster_rows = TRUE, cluster_cols = FALSE,  cutree_rows = 10, annotation_colors = ann_colors)
+
+```
+
+
+```{r heatmapGO, fig.cap="Effect of treatment in Susceptible ", echo=FALSE, fig.width=10, fig.height=10}
+
+pdf("heatmap-defence-GO.pdf", width=10, height=10)
+pheatmap(go.sum.u,  annotation_col = anno, annotation_row = clean_data, fontsize_col = 12, fontsize_row = 12, show_rownames=F, show_colnames=TRUE, cluster_rows = TRUE, cluster_cols = FALSE,  cutree_rows = 10, annotation_colors = ann_colors)
+
+dev.off()
+
+```
+
+
+ Pfam information
+
+```{r pfam, echo=FALSE, message=FALSE}
+dflist <- list("GroupI"=sin3.scn3, 
+               "GroupII"=sin6.scn6, 
+               "GroupIII"=sin8.scn8, 
+               "GroupIV"=sif6.scf6, 
+               "GroupV"=sif8.scf8, 
+               "GroupVI"=min3.mcn3, 
+               "GroupVII"=min8.mcn8
+              )
+
+p <- list("PR.1.cysteine.rich"="PF00188","PR.2.glucanse"="PF00332",
+          "PR.3.chitinase"="PF00182","PR.4.barwin"="PF00967",
+          "PR.5.thaumatin"="PF00314","PR.6.serpin"="PF00079",
+          "PR.6.bowman.birk"="PF00228","PR.6.inhibitor"="PF00280",
+          "PR.8.subtilase"="PF00704","PR.9.peroxidase"="PF00141",
+          "PR.10.betv1"="PF00407","PR.12.gama.thionin"="PF00304",
+          "PR.13.thionine"="PF00321","PR.14.nsLTP"="PF00234",
+          "PR.15.cupin"="PF00190","PR.17.BSP"="PF04450",
+          "Chalcone.synthase-N"="PF00195","Chalcone.synthase-C"="PF02797",
+          "MatE"="PF01554", "Cytochrome.P450"="PF00067")
+
+cnt=0
+b=0
+l <- list()
+for(e in dflist){
+  cnt=cnt+1
+  nm<- names(dflist[cnt])
+  
+  e$Group <- nm
+  
+  g <- as.vector(row.names(e))
+  
+  ga <- getBM(attributes = c("ensembl_gene_id", "description","pfam"), 
+                     filters = "ensembl_gene_id", values = g, mart = tmart)
+ 
+ e<-as.data.frame(e)
+ ega<- merge(x=e, y=ga, by.x=0, by.y="ensembl_gene_id", all=TRUE)
+ 
+ l[[cnt]] <-ega
+ 
+}
+
+pfam <- rbindlist(l,use.names=TRUE)
+write.table(pfam, file="significant-genes-pfam.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+pfamf <- pfam[pfam %chin% p ]
+pfamf$FC[pfamf$log2FoldChange >= 1] <- "Induced"
+pfamf$FC[pfamf$log2FoldChange < 0] <- "Suppressed"
+
+```
+
+
+```{r pfamSubset, echo=FALSE}
+
+# Adds readable Pfam label PR group and others
+cnt = 0
+for(e in p){
+
+  cnt=cnt+1
+  pfamf[pfam %in% e] ~ names(p[cnt])
+pfamf$PR[pfamf$pfam %in% e] <- names(p[cnt])
+pfamf$ID[pfamf$pfam %in% e] <- p[cnt]
+}
+
+tmp <- as.data.frame(pfamf)
+tmp <- subset(tmp, select = -c(ID))
+write.table(tmp, file="significant-genes-subset-pfam-label.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+```
+
+ heatmap pfam defence groups
+
+```{r, fig.cap="PR SDEGs", echo=FALSE }
+
+PR  <- norm.counts[ pfamf$Row.names, ]
+PR.sum <- t(apply(PR, 1, function(row) c(mean(row[c(1,12,23,42,43,44)]), #"SCN3" GroupI
+                                         mean(row[c(34,37,38,45,46,47)]), #"SIN3"
+                                         mean(row[c(39,40,41,48,49,50)]), #"SCN6"
+                                         mean(row[c(2,3,4,51,52,53)]),   #"SIN6"
+                                         mean(row[c(11,13,27,60,61,74)]), #SCN8"
+                                         mean(row[c(15,16,17,63,64,65)]), #"SIN8"
+                                         mean(row[c(5,6,7,54,55,56)]),   #"SCF6" 
+                                         mean(row[c(8,9,10,57,58,59)]),  #"SIF6"
+                                         mean(row[c(18,19,20,66,67,68)]), #"SCF8"
+                                         mean(row[c(21,22,69,70)]),       #"SIF8"
+                                         mean(row[c(24,25,26,71,72,73)]), #"MCN3"
+                                         mean(row[c(14,28,29,62,75,76)]), #"MIN3"
+                                         mean(row[c(30,31,32,77,78,79)]), #"MCN8"
+                                         mean(row[c(33,35,36,80,81,82)]) #"MIN8"
+                                         )))
+
+PR.sum  <- PR.sum - rowMeans(PR.sum)
+
+colnames(PR.sum) <- c("SCN3", "SIN3","SCN6", "SIN6",
+                      "SCN8", "SIN8","SCF6", "SIF6", 
+                      "SCF8", "SIF8", "MCN3", "MIN3",
+                      "MCN8", "MIN8")
+
+anno <- as.data.frame(colData(dds)[, c( "cultivar", "inoculated", "treatment", "dpi")])
+
+ x <- c("Scout", "Scout", "Scout", "Scout", 
+        "Scout", "Scout", "Scout", "Scout",
+        "Scout", "Scout",
+         "Magenta", "Magenta", "Magenta", "Magenta")
+ 
+ y <- colnames(PR.sum)
+ 
+ z <- c("Control","Inoc.","Control","Inoc.",
+        "Control","Inoc.","Control","Inoc.",
+        "Control","Inoc.","Control","Inoc.",
+        "Control","Inoc.")
+ 
+anno <- data.frame("cultivar" = x, "ptr"= z, row.names=y)
+
+anno$dpi <- c("3d","3d","6d","6d",
+              "8d","8d","6d","6d",
+              "8d","8d","3d","3d",
+              "8d","8d") 
+
+anno$fungicide <- c("N","N","N","N","N","N",
+                    "F","F","F","F",
+                    "N","N","N","N" )
+
+# get row annotations
+pfamf <- pfamf %>% dplyr::rename(Gene = 1)
+annor <- as.data.frame(pfamf[,c( "Gene", "PR")])
+
+annor$PR[annor$PR == "PR.6.bowman.birk"] <-"PR.6.proteinase inhibitor"
+annor$PR[annor$PR == "PR.6.serpin"] <-"PR.6.proteinase inhibitor"
+annor$PR[annor$PR == "PR.6.inhibitor"] <-"PR.6.proteinase inhibitor"
+annor <- unique(annor)
+
+#Remove duplicates 
+ clean_data <- annor %>% 
+  dplyr::group_by(Gene) %>% 
+  dplyr::summarise(PR = paste0(unique(PR), collapse = "_"))
+
+clean_data$PR[clean_data$PR == "Chalcone.synthase-C_Chalcone.synthase-N"] <- "Chalcone.synthase"
+clean_data$PR[clean_data$PR == "Chalcone.synthase-N_Chalcone.synthase-C"] <- "Chalcone.synthase"
+clean_data <- as.data.frame(clean_data$PR, row.names=clean_data$Gene)
+clean_data <- clean_data %>% dplyr::rename(PR = 1)
+
+#
+PR.sum.u <- unique(PR.sum)
+
+# set colors for row
+len <- length(unique(clean_data$PR))
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(len)
+names <- sort(unique(clean_data$PR))
+names(set) <- names
+
+
+
+# Specify colors
+ann_colors <- list(
+    cultivar = c(Scout="firebrick",Magenta="blue"),
+    ptr = c(Control = "#1B9E77", Inoc. = "#D95F02"),
+    dpi = c("3d" = "#7570B3","6d" = "#6AB241", "8d" = "#E7298A"),
+    PR = set )
+
+```
+
+
+```{r pfamHeatmap, echo=FALSE, fig.width=12, fig.height=12}
+
+pheatmap(PR.sum.u,  annotation_col = anno, annotation_row = clean_data, 
+         fontsize_col = 12,  fontsize_row = 12, show_rownames=F, show_colnames=TRUE, 
+         cluster_rows = TRUE, cluster_cols = FALSE,  
+         cutree_rows = len, annotation_colors = ann_colors) 
+```
+
+
+```{r, echo=FALSE, fig.width=12, fig.height=12}
+
+pdf("heatmap-pathogenesis-pfam.pdf", width=12, height=12)
+
+pheatmap(PR.sum.u,  annotation_col = anno, annotation_row = clean_data, 
+         fontsize_col = 12,  fontsize_row = 12, show_rownames=F, show_colnames=TRUE, 
+         cluster_rows = TRUE, cluster_cols = FALSE,  
+         cutree_rows = len, annotation_colors = ann_colors) 
+
+dev.off()
+
+```
+
+
+heatmap filtered PRs by sample 3 and 8 dpi
+
+```{r , echo=FALSE, fig.width=10, fig.height=12 }
+
+PR  <- norm.counts[ pfamf$Gene, ]
+#PR  <- mat[ pfamf$Row.names, ]
+PR.sum <- t(apply(PR, 1, function(row) c(mean(row[c(1,12,23,42,43,44)]),  #SCN3
+                                         mean(row[c(34,37,38,45,46,47)]),  #SIN3
+                                         mean(row[c(11,13,27,60,61,74)]), #SCN8
+                                         mean(row[c(15,16,17,63,64,65)]), #SIN8
+                                         mean(row[c(24,25,26,71,72,73)]), #MCN3
+                                         mean(row[c(14,28,29,62,75,76)]), #MIN3
+                                         mean(row[c(30,31,32,77,78,79)]), #MCN8
+                                         mean(row[c(33,35,36,80,81,82)]) #MIN8
+                                         )))
+
+PR.sum  <- PR.sum - rowMeans(PR.sum)
+
+colnames(PR.sum) <- c("SCN3", "SIN3","SCN8", "SIN8", 
+                      "MCN3", "MIN3", "MCN8", "MIN8")
+
+anno <- as.data.frame(colData(dds)[, c( "cultivar", "inoculated", "dpi")])
+
+ x <- c("Scout", "Scout", "Scout", "Scout",
+        "Magenta", "Magenta","Magenta", "Magenta")
+ 
+ y <- colnames(PR.sum)
+ 
+ z <- c("Control","Inoc.", "Control","Inoc.", 
+        "Control", "Inoc.","Control","Inoc." )
+ 
+anno <- data.frame("cultivar" = x, "ptr"= z, row.names=y)
+
+anno$dpi <- c("3d","3d","8d","8d","3d","3d","8d","8d")
+
+#anno$fungicide <- c("N","N","N","N",
+#                    "N","N","N","N" )
+
+pfamf <- pfamf %>% dplyr::rename(Gene = 1)
+annor <- as.data.frame(pfamf[,c( "Gene", "PR")])
+annor$PR[annor$PR == "PR.6.bowman.birk"] <-"PR.6.proteinase inhibitor"
+annor$PR[annor$PR == "PR.6.serpin"] <-"PR.6.proteinase inhibitor"
+annor$PR[annor$PR == "PR.6.inhibitor"] <-"PR.6.proteinase inhibitor"
+annor <- unique(annor)
+
+clean_data <- annor %>% 
+  dplyr::group_by(Gene) %>% 
+  dplyr::summarise(#number_of_annot = length(unique(PR)), 
+            PR = paste0(unique(PR), collapse = "_"))
+
+clean_data <- as.data.frame(clean_data$PR, row.names=clean_data$Gene)
+clean_data <- clean_data %>% dplyr::rename(PR = 1)
+clean_data$PR[clean_data$PR == "Chalcone.synthase-N_Chalcone.synthase-C"] <- "Chalcone.synthase"
+clean_data$PR[clean_data$PR == "Chalcone.synthase-C_Chalcone.synthase-N"] <- "Chalcone.synthase"
+
+#
+PR.sum.u <- unique(PR.sum)
+
+# set colors for row
+len <- length(unique(clean_data$PR))
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(len)
+names <- sort(unique(clean_data$PR))
+
+names(set) <- names
+
+# Specify colors
+ann_colors = list(
+    cultivar = c(Scout="firebrick",Magenta="blue"),
+    ptr = c(Control = "#1B9E77", Inoc. = "#D95F02"),
+    dpi = c("3d" = "#7570B3", "8d" = "#E7298A"),
+    PR = set )
+
+pheatmap(PR.sum.u,  annotation_col = anno, annotation_row = clean_data, fontsize_col = 12, fontsize_row = 12, show_rownames=F, show_colnames=TRUE, cluster_rows = TRUE, cluster_cols = FALSE,  cutree_rows = 20, annotation_colors = ann_colors)
+
+```
+
+
+```{r pfamHeatmap2, fig.cap="heatmap patho no fungicide ", echo=FALSE, fig.width=10, fig.height=12 }
+
+pdf("heatmap-pathogenesis-pfam2.pdf", width=8, height=14)
+pheatmap(PR.sum.u,  annotation_col = anno, annotation_row = clean_data, fontsize_col = 12, fontsize_row = 12, show_rownames=F, show_colnames=TRUE, cluster_rows = TRUE, cluster_cols = FALSE,  cutree_rows = 20, annotation_colors = ann_colors)
+
+dev.off()
+
+```
+
+
+Make manuscript summary table of the DE subset groups 
+
+```{r, echo=FALSE}
+
+pfam.grp <- data.table(table(pfamf$Group,pfamf$PR,pfamf$FC))
+#write.table(pfam.grp, file="count-pfam-group.txt", sep="\t", col.names=FALSE, row.names=FALSE)
+
+ipr.grp <- data.table(table(iprof$Group,iprof$IPR,iprof$FC))
+#write.table(ipr.grp, file="count-ipr-group.txt", sep="\t", col.names=FALSE, row.names=FALSE)
+
+go.grp <- data.table(table(gosf$Group,gosf$GO,gosf$FC))
+#write.table(go.grp, file="count-go-group.txt", sep="\t", col.names=FALSE, row.names=FALSE)
+
+final.grp <- rbind(pfam.grp, ipr.grp,go.grp)
+#write.table(final.grp, file="table-summary.txt", sep="\t", col.names=FALSE, row.names=FALSE)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyr)
+table.de <- rbind(pfam.grp, ipr.grp, go.grp)
+table.wide <- pivot_wider(table.de, names_from = c(V1,V3), values_from = N)
+#write.table(table.wide, file="table-summary.txt", sep="\t", col.names=TRUE, row.names=FALSE)
+```
+
+count annotated pfam genes in genome
+
+```{r, echo=FALSE, message=FALSE}
+
+cnt=0
+c <- list()
+for(e in p){
+  cnt=cnt+1
+  
+
+  ga <- getBM(attributes = c("ensembl_gene_id", "description","pfam"), 
+                     filters = "pfam", values = e, mart = tmart)
+ dim(ga)
+ 
+  c[[cnt]] <-length(ga$ensembl_gene_id)
+ 
+}
+
+names(c) <- names(p)
+pfam <- data.frame(unlist(c))
+
+#write.table(pfam, file="count-all-pfam-group.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+ 
+```
+
+count annotated interpro genes in the genome
+```{r, echo=FALSE, message=FALSE}
+
+cnt=0
+c <- list()
+#i<-"IPR045084"
+for(e in i){
+  cnt=cnt+1
+  
+ga <- getBM(attributes = c("ensembl_gene_id", "description","interpro", "interpro_description"), 
+                     filters = "interpro", values = e, mart = tmart)
+ 
+ dim(ga)
+ 
+  c[[cnt]] <-length(ga$ensembl_gene_id)
+ 
+}
+
+names(c) <- names(i)
+ipr <- data.frame(unlist(c))
+
+#write.table(ipr, file="count-all-ipr-group.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+ 
+```
+
+ count the annotated GO genes in genome
+```{r, echo=FALSE, message=FALSE}
+
+cnt=0
+c <- list()
+for(e in gi){
+  cnt=cnt+1
+
+ga <- getBM(attributes = c("ensembl_gene_id", "description","go_id", "name_1006", "namespace_1003"), 
+                     filters = "go", values = e, mart = tmart) 
+ 
+ dim(ga)
+ 
+  c[[cnt]] <-length(ga$ensembl_gene_id)
+ 
+}
+
+names(c) <- names(gi)
+go <- data.frame(unlist(c))
+
+#write.table(go, file="count-all-go-group.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+```
+
+Create the final table
+
+```{r, echo=FALSE, warning=FALSE}
+table.total <- rbind(ipr, pfam, go)
+table.total <- rownames_to_column(table.total, "V2")
+row.names(table.wide) <- table.wide$V2
+table.final <- merge(table.wide, table.total, by.x="V2", by.y="V2", all=TRUE)
+names(table.final)[names(table.final)=="unlist.c."] <- "Genome"
+names(table.final)[names(table.final)=="V2"] <- "Defence"
+table.final <- table.final[,c(1, 2,9, 3,10, 4,11, 5,12, 6,13, 7,14, 8,15, 16)]
+
+table.final[is.na(table.final)] = 0  
+#write.table(table.final, file="count-table-final.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+
+```
+
+
+```{r, echo=FALSE}
+
+# Adds readable identifier to table
+ll <- append(p, i)
+ll <- append(ll, gi)
+cnt = 0
+for(e in names(ll)){
+
+  cnt=cnt+1
+  h=unlist(ll[cnt])
+  table.final$Function[table.final$Defence %in% e] <-h
+}
+
+table.final <- data.frame(table.final[,c(1,17,2:16)])
+write.table(table.final, file="Final-count-table.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+
+```
+
+### Extra table analysis for specific groups
+
+IPR transporters: ABC transporter	IPR003439, Sugar Transporter (MF-like)	IPR005828 Glutathione-S-transferase	IPR004045
+
+```{r, echo=FALSE, warning=FALSE, message=F, fig.height=12, fig.width=10}
+
+dflist <- list("ABCtransporter"="IPR003439", Sugar="IPR005828", GST="IPR004045")
+
+cnt=0
+b=0
+l <- list()
+for(e in dflist){
+
+ipr.id <- e
+df <- subset(iprof, interpro == ipr.id)
+
+
+t <- as.data.frame(df %>% 
+  group_by(Group,FC) %>%
+  dplyr::summarise(count = n()))
+
+dat <- reshape(t, idvar = "Group", timevar = "FC", direction = "wide" )
+dat[is.na(dat)] <- 0
+
+colnames(dat)[2] <- "Induced"
+colnames(dat)[3] <- "Suppressed" 
+
+mdat<- melt(dat, id="Group")
+
+colnames(mdat)[2] <- "Regulation"
+colnames(mdat)[3] <- "SDEGs"
+
+r <- ggplot(mdat, aes(fill=Regulation, y=SDEGs, x=Group)) + 
+  theme(axis.text=element_text(size=14), #text=element_text(family="Calibri"),
+        axis.title=element_text(size=18, face="bold"), 
+        legend.text=element_text(size=16), legend.title=element_text(size=16),
+        strip.text = element_text(size = 18, face = "bold"),
+        strip.background=element_rect(fill="white")) +
+  geom_bar(position="stack", data = subset(mdat, Regulation == "Induced"), 
+           aes(y = SDEGs, fill = Regulation), stat = "identity") +
+  geom_bar(position="stack", data = subset(mdat, Regulation == "Suppressed"), 
+           aes(y = -SDEGs, fill = Regulation), stat = "identity") + xlab("Groups") +
+  ylab("Number of DE genes")  +
+  guides(fill=guide_legend(nrow=2, title=paste("Regulation\n",ipr.id))) + geom_hline(yintercept = 0,colour = "grey90")
+  
+#pdf(file=paste(ipr.id, "-chart-1.pdf", sep=""), width=12, height=6)
+#print(r)
+#dev.off()
+
+
+dat2 <- as.matrix(dat[,-1])
+rownames(dat2) <- dat$Group
+
+longData<- reshape2::melt(dat2) #melt(dat2)
+h<- ggplot(longData, aes(y = Var2, x = Var1)) + 
+  geom_raster(aes(fill=value)) + 
+  scale_fill_gradient(low="grey90", high="red") +
+  geom_text(aes(label = round(value, 1)), size=8) +
+  labs(y="Regulation", x="Group") +
+  theme(axis.text=element_text(size=20), #text=element_text(family="Calibri", size = 20),
+        axis.title=element_text(size=24, face="bold"), 
+        legend.text=element_text(size=18), legend.title=element_text(size=18),
+        strip.text = element_text(size = 18, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90"),
+        legend.position = "right", panel.border = element_rect(fill = NA)) +
+  guides(fill=guide_legend(title=paste("SDEGs\n",ipr.id))) 
+  
+#pdf(file=paste(ipr.id,"-chart-2.pdf", sep=""), width=12, height=6)
+#print(h)
+#dev.off()
+#ggsave(h, file=paste("regulation-",ipr,".png", sep=""), width=15, height=5)
+
+
+## Induced
+
+colnames(df)[1] <- "Gene"
+df <- data.frame(df, stringsAsFactors=FALSE)
+Iu <- subset(df, (Group == "GroupI") & (log2FoldChange >= 1))
+Iu <- Iu$Gene
+Iu <- as.character(Iu)
+IIIu <- subset(df, (Group == "GroupIII") & (log2FoldChange >= 1))
+IIIu <- IIIu$Gene
+IIIu <- as.character(IIIu)
+VIu <- subset(df, (Group == "GroupVI") & (log2FoldChange >= 1))
+VIu <- VIu$Gene
+VIu <- as.character(VIu)
+VIIu <- subset(df, (Group == "GroupVII") & (log2FoldChange >= 1))
+VIIu <- VIIu$Gene
+VIIu <- as.character(VIIu)
+
+
+vdeu <- list(
+  I= Iu,
+  III= IIIu,
+  VI = VIu,
+  VII = VIIu
+  )
+
+vu <- ggVennDiagram(vdeu, label="both",lwd = 0.3, lty = 1, color = "grey",  label_alpha = 0, edge_size = 0.3, label_size = 8, set_size = 8) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  theme(legend.position = "none", title=element_text(size=20), plot.title = element_text(hjust = 0.5)) +
+  labs(title=paste("Induced ",ipr.id,sep=""))
+
+#pdf(file=paste(ipr.id,"-venn-diagram-up.pdf", sep=""), width=10, height=10)
+#print(vu)
+#dev.off()
+
+# get the list of genes from the venn diagram e.g. induced regulation unique to scout groupI 
+overlap.u <- calculate.overlap(vdeu)
+gu <- overlap.u$a9
+gu <- unique(gu)
+
+# to retrieve any extra information from biomart
+giu <- getBM(attributes = c("ensembl_gene_id", "description","interpro", "interpro_description"), 
+                     filters = "ensembl_gene_id", values = gu, mart = tmart)
+
+gpu <- getBM(attributes = c("ensembl_gene_id", "description","pfam"), 
+                     filters = "ensembl_gene_id", values = gu, mart = tmart)
+
+# Note there will be redundancy in groupings
+giu.sum <- giu %>% 
+  group_by(interpro_description) %>% 
+  dplyr::summarise(count_ipr=n_distinct(ensembl_gene_id))
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(23)
+
+giu.sum$interpro_description = str_wrap(giu.sum$interpro_description, width = 30)
+
+bpu<- ggplot(giu.sum, aes(x=interpro_description, y=count_ipr, fill=interpro_description))+
+geom_bar(stat = "identity",show.legend = FALSE) +
+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=14)) +
+    scale_fill_manual(values = set)  
+  
+
+#pdf(file=paste(ipr.id,"-interpro-up.pdf", sep=""), width=10, height=10)
+#print(bpu)
+#dev.off()
+
+## Suppressed
+
+Id <- subset(df, (Group == "GroupI") & (log2FoldChange < 0))
+Id <- Id$Gene
+Id <- as.character(Id)
+IIId <- subset(df, (Group == "GroupIII") & (log2FoldChange < 0))
+IIId <- IIId$Gene
+IIId <- as.character(IIId)
+VId <- subset(df, (Group == "GroupVI") & (log2FoldChange < 0))
+VId <- VId$Gene
+VId <- as.character(VId)
+VIId <- subset(df, (Group == "GroupVII") & (log2FoldChange < 0))
+VIId <- VIId$Gene
+VIId <- as.character(VIId)
+
+vded <- list(
+  I = Id, 
+  III = IIId,
+  VI=VId,
+  VII=VIId
+  )
+
+vd <- ggVennDiagram(vded, label="both",lwd = 0.3, lty = 1, color = "grey",  label_alpha = 0, edge_size = 0.3, label_size = 8, set_size = 8) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  theme(legend.position = "none", title=element_text(size=20), plot.title = element_text(hjust = 0.5)) +
+  labs(title=paste("Supressed ",ipr.id,sep=""))
+  
+#pdf(file=paste(ipr.id,"-venn-diagram-down.pdf", sep=""), width=10, height=10)
+#print(vd)
+#dev.off()
+
+
+# get the list of genes from the venn diagram e.g. induced regulation unique to scout 3 (34 genes (20%))
+overlap.d <- calculate.overlap(vded)
+gd <- overlap.d$a9
+gd <- unique(gd)
+
+
+gid <- getBM(attributes = c("ensembl_gene_id", "description","interpro", "interpro_description"), 
+                     filters = "ensembl_gene_id", values = gd, mart = tmart)
+
+gpd <- getBM(attributes = c("ensembl_gene_id", "description","pfam"), 
+                     filters = "ensembl_gene_id", values = gd, mart = tmart)
+
+gid.sum <- gid %>% 
+  group_by(interpro_description) %>% 
+  dplyr::summarise(count_ipr=n_distinct(ensembl_gene_id))
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(23)
+
+gid.sum$interpro_description = str_wrap(gid.sum$interpro_description, width = 30)
+
+bpd<- ggplot(gid.sum, aes(x=interpro_description, y=count_ipr, fill=interpro_description))+
+geom_bar(stat = "identity",show.legend = FALSE) +
+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=14)) +
+    scale_fill_manual(values = set)
+
+#pdf(file=paste(ipr.id,"-interpro-down.pdf", sep=""), width=10, height=10)
+#print(bpd)
+#dev.off()
+
+
+# Join to see
+
+Scout.induced = c(Iu, IIIu)
+Magenta.induced = c(VIu, VIIu)
+
+Scout.suppressed = c(Id, IIId)
+Magenta.suppressed = c(VId, VIId)
+
+
+vdeg <- list(
+  Scout.induced = Scout.induced, 
+  Magenta.induced = Magenta.induced,
+  Scout.suppressed=Scout.suppressed,
+  Magenta.suppressed=Magenta.suppressed
+  )
+
+vud <- ggVennDiagram(vdeg, label="both",lwd = 0.3, lty = 1, color = "grey",  label_alpha = 0, edge_size = 0.3, label_size = 8, set_size = 6) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  theme(legend.position = "none", title=element_text(size=20), plot.title = element_text(hjust = 0.5)) +
+  labs(title=paste("SDEGs ",ipr.id,sep=""))
+  #scale_fill_distiller(palette = "Reds", direction = 1) 
+   
+#pdf(file=paste(ipr.id,"-venn-diagram-all.pdf", sep=""), width=10, height=10)
+#print(vud)
+#dev.off()
+
+
+# Let's heatmap unique scout induced and suppressed
+gud <- unique(c(gu,gd))
+su  <- norm.counts[gud, ]
+su.sum <- t(apply(su, 1, function(row) c(mean(row[c(1,12,23,42,43,44)]),  #SCN3
+                                         mean(row[c(11,13,27,60,61,74)]), #SCN8
+                                         mean(row[c(15,16,17,63,64,65)]), #SIN8
+                                         mean(row[c(24,25,26,71,72,73)]), #MCN3
+                                         mean(row[c(14,28,29,62,75,76)]), #MIN3
+                                         mean(row[c(30,31,32,77,78,79)]), #MCN8
+                                         mean(row[c(33,35,36,80,81,82)]), #MIN8
+                                         mean(row[c(34,37,38,45,46,47)])  #SIN3 
+                                         )))
+
+su.sum  <- su.sum - rowMeans(su.sum)
+
+colnames(su.sum) <- c("SCN3", "SCN8", "SIN8", "MCN3", 
+                      "MIN3", "MCN8", "MIN8", "SIN3")
+
+anno <- as.data.frame(colData(dds)[, c( "cultivar", "inoculated", "treatment", "dpi")])
+
+ x <- c("Scout", "Scout", "Scout", "Magenta", 
+        "Magenta","Magenta", "Magenta", "Scout")
+ 
+ y <- colnames(su.sum)
+ 
+ z <- c("Control","Control","Inoc.", "Control",
+        "Inoc.","Control","Inoc.", "Inoc.")
+ 
+anno <- data.frame("cultivar" = x, "ptr"= z, row.names=y)
+
+anno$dpi <- c("3d","8d","8d","3d","3d","8d","8d","3d" )
+
+anno$fungicide <- c("N","N","N","N",
+                    "N","N","N","N" )
+
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(16)
+names <- sort(unique(clean_data$PR))
+new.list <- setNames(as.list(set), names)
+names(set) <- names
+
+# Specify colors
+ann_colors = list(
+    cultivar = c(Scout="firebrick",Magenta="blue"),
+    ptr = c(Control = "#1B9E77", Inoc. = "#D95F02"),
+    dpi = c("3d" = "#7570B3", "8d" = "#E7298A") )
+
+
+phud <- pheatmap(su.sum,  annotation_col = anno, fontsize_col = 12, 
+         fontsize_row = 10, show_rownames=TRUE, show_colnames=TRUE, 
+         cluster_rows = TRUE, cluster_cols = TRUE,  cutree_rows = 10, 
+         annotation_colors = ann_colors, main=ipr.id)
+
+#pdf(file=paste(ipr.id,"-expression-scout-uniq.pdf", sep=""), width=8, height=10)
+print(phud)
+#dev.off()
+
+
+ip <- ggarrange(h,vud,vu,bpu,vd,bpd, labels=c("A", "B","C","D","E","F","G"), ncol=2, nrow = 3)
+
+pdf(file=paste(ipr.id,"-figure.pdf", sep=""), width=30, height=30)
+print(ip)
+dev.off()
+
+}
+
+```
+
+
+GO analysis - prints subset of Scout SDEGs from Venn diagram in a heatmap 
+
+dflist <- list("TF"="GO:0006355", 
+               "Transporter"="GO:0055085", 
+               "Defence"="GO:0006952")
+               
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Large list to find unique in Venn
+dflist <- list("TF"="GO:0006355", "Transporter"="GO:0055085", "Defence"="GO:0006952")
+
+# small list of interest set unique list below **
+#dflist <- list("Defence"="GO:0006952")
+
+cnt=0
+b=0
+l <- list()
+
+for(e in dflist){
+ # cnt=cnt+1
+ #  nm<- names(dflist[cnt])
+
+go.id <- e
+
+df <- subset(gos, go_id == go.id)
+
+t <- as.data.frame(df %>% 
+  group_by(Group,FC) %>%
+  dplyr::summarise(count = n()))
+
+dat <- reshape(t, idvar = "Group", timevar = "FC", direction = "wide" )
+dat[is.na(dat)] <- 0
+
+
+colnames(dat)[2] <- "Induced"
+colnames(dat)[3] <- "Suppressed" 
+
+mdat<- reshape2::melt(dat, id="Group")
+
+colnames(mdat)[2] <- "Regulation"
+colnames(mdat)[3] <- "SDEGs"
+
+r <- ggplot(mdat, aes(fill=Regulation, y=SDEGs, x=Group)) + 
+  theme(axis.text=element_text(size=14), # text=element_text(family="Calibri"),
+        axis.title=element_text(size=18, face="bold"), 
+        legend.text=element_text(size=16), legend.title=element_text(size=16),
+        strip.text = element_text(size = 18, face = "bold"),
+        strip.background=element_rect(fill="white")) +
+  geom_bar(position="stack", data = subset(mdat, Regulation == "Induced"), 
+           aes(y = SDEGs, fill = Regulation), stat = "identity") +
+  geom_bar(position="stack", data = subset(mdat, Regulation == "Suppressed"), 
+           aes(y = -SDEGs, fill = Regulation), stat = "identity") + xlab("Groups") +
+  ylab("Number of DE genes")  +
+  guides(fill=guide_legend(nrow=2, title=paste("Regulation\n",go.id))) + geom_hline(yintercept = 0,colour = "grey90")
+  
+#pdf(file=paste(go.id,"-chart-1.pdf", sep=""), width=8, height=10)
+#print(r)
+#dev.off()
+
+
+dat2 <- as.matrix(dat[,-1])
+rownames(dat2) <- dat$Group
+
+longData<- reshape2::melt(dat2) #melt(dat2)
+h<- ggplot(longData, aes(y = Var2, x = Var1)) + 
+  geom_raster(aes(fill=value)) + 
+  scale_fill_gradient(low="grey90", high="red") +
+  geom_text(aes(label = round(value, 1)), size=8) +
+  labs(y="Regulation", x="Group") +
+  theme(axis.text=element_text(size=24), #text=element_text(family="Calibri", size = 20),
+        axis.title=element_text(size=24, face="bold"), 
+        legend.text=element_text(size=18), legend.title=element_text(size=18),
+        strip.text = element_text(size = 18, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90"),
+        legend.position = "right", panel.border = element_rect(fill = NA)) +
+  guides(fill=guide_legend(title=paste("SDEGs\n",go.id))) 
+  
+#pdf(file=paste(go.id,"-chart-2.pdf", sep=""), width=14, height=8)
+#print(h)
+#dev.off()
+
+#ggsave(h, file=paste("regulation-",ipr,".png", sep=""), width=15, height=5)
+
+
+## 
+## Induced
+##
+
+colnames(df)[1] <- "Gene"
+df <- data.frame(df, stringsAsFactors=FALSE)
+Iu <- subset(df, (Group == "GroupI") & (log2FoldChange >= 1))
+Iu <- Iu$Gene
+Iu <- as.character(Iu)
+IIIu <- subset(df, (Group == "GroupIII") & (log2FoldChange >= 1))
+IIIu <- IIIu$Gene
+IIIu <- as.character(IIIu)
+VIu <- subset(df, (Group == "GroupVI") & (log2FoldChange >= 1))
+VIu <- VIu$Gene
+VIu <- as.character(VIu)
+VIIu <- subset(df, (Group == "GroupVII") & (log2FoldChange >= 1))
+VIIu <- VIIu$Gene
+VIIu <- as.character(VIIu)
+
+vdeu <- list(
+  I= Iu,
+  III= IIIu,
+  VI = VIu,
+  VII = VIIu
+  )
+
+# Venn
+vu <- ggVennDiagram(vdeu, label="both",lwd = 0.3, lty = 1, color = "grey",  label_alpha = 0, edge_size = 0.3, label_size = 8, set_size = 8) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  theme(legend.position = "none", title=element_text(size=20), plot.title = element_text(hjust = 0.5)) +
+  labs(title=paste("Induced ",go.id,sep=""))
+  #scale_fill_distiller(palette = "Reds", direction = 1) 
+
+#pdf(file=paste(go.id,"-venn-diagram-up.pdf", sep=""), width=10, height=10)
+#print(vu)
+#dev.off()
+
+# get part of the venn ** comment out to get all
+overlap.u <- calculate.overlap(vdeu)
+gu <- overlap.u$a9
+gu <- unique(gu)
+#length(gu)
+
+# get all the list ** set to get all
+#gu <- unique(df$Gene)
+
+# to retrieve any extra information from biomart
+giu.go <- getBM(attributes = c("ensembl_gene_id", "description","interpro", "interpro_description"), 
+                     filters = "ensembl_gene_id", values = gu, mart = tmart)
+
+
+
+# Note there will be redundancy in groupings
+
+giu.go.sum <- giu.go %>% 
+  group_by(interpro_description) %>% 
+  dplyr::summarise(count_ipr=n_distinct(ensembl_gene_id))
+
+#set <-  colorRampPalette(brewer.pal(12, "Paired"))(77)
+
+giu.go.sum$interpro_description = str_wrap(giu.go.sum$interpro_description, width = 60)
+
+# Up Interpro
+bpu<- ggplot(giu.go.sum, aes(x=interpro_description, y=count_ipr, fill=interpro_description))+
+geom_bar(stat = "identity",show.legend = FALSE) +
+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=14)) +
+  ggtitle(paste("Induced ",go.id,sep="")) 
+#+ scale_fill_manual(values = set)
+
+#pdf(file=paste(go.id,"-interpro-up.pdf", sep=""), width=10, height=10)
+#print(bpu)
+#dev.off()
+
+##
+## Suppressed
+##
+
+Id <- subset(df, (Group == "GroupI") & (log2FoldChange < 0))
+Id <- Id$Gene
+Id <- as.character(Id)
+IIId <- subset(df, (Group == "GroupIII") & (log2FoldChange < 0))
+IIId <- IIId$Gene
+IIId <- as.character(IIId)
+VId <- subset(df, (Group == "GroupVI") & (log2FoldChange < 0))
+VId <- VId$Gene
+VId <- as.character(VId)
+VIId <- subset(df, (Group == "GroupVII") & (log2FoldChange < 0))
+VIId <- VIId$Gene
+VIId <- as.character(VIId)
+
+vded <- list(
+  I = Id, 
+  III = IIId,
+  VI=VId,
+  VII=VIId
+  )
+
+# Down Venn
+vd <- ggVennDiagram(vded, label="both",lwd = 0.3, lty = 1, color = "grey",  label_alpha = 0, edge_size = 0.3, label_size = 8, set_size = 8) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  theme(legend.position = "none", title=element_text(size=20), plot.title = element_text(hjust = 0.5)) +
+  labs(title=paste("Supressed ",go.id,sep=""))
+  #scale_fill_distiller(palette = "Reds", direction = 1) 
+   
+#pdf(file=paste(go.id,"-venn-diagram-down.pdf", sep=""), width=12, height=10)
+#print(vd)
+#dev.off()
+
+
+# get the list of genes from the venn diagram e.g. induced regulation unique to scout 3 (34 genes (20%))
+overlap.d <- calculate.overlap(vded)
+gd <- overlap.d$a9
+gd <- unique(gd)
+#length(gd)
+
+# to retrieve any extra information from biomart
+gid.go <- getBM(attributes = c("ensembl_gene_id", "description","interpro", "interpro_description"), 
+                     filters = "ensembl_gene_id", values = gd, mart = tmart)
+
+#gi <- getBM(attributes = c("ensembl_gene_id", "description","pfam"), 
+#                     filters = "ensembl_gene_id", values = gd, mart = tmart)
+
+# Note there will be redundancy in groupings
+gid.go.sum <- gid.go %>% 
+  group_by(interpro_description) %>% 
+  dplyr::summarise(count_ipr=n_distinct(ensembl_gene_id))
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(97)
+
+gid.go.sum$interpro_description = str_wrap(gid.go.sum$interpro_description, width = 60)
+
+# Down Interpro
+bpd<- ggplot(gid.go.sum, aes(x=interpro_description, y=count_ipr, fill=interpro_description))+
+geom_bar(stat = "identity",show.legend = FALSE) +
+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=14)) + 
+  ggtitle(paste("Supressed ",go.id,sep=""))
+#scale_fill_manual(values = set)
+
+#pdf(file=paste(go.id,"-interpro-down.pdf", sep=""), width=10, height=10)
+#print(bpd)
+#dev.off()
+
+
+# Join to see
+
+Scout.induced = c(Iu, IIIu)
+Magenta.induced = c(VIu, VIIu)
+
+Scout.suppressed = c(Id, IIId)
+Magenta.suppressed = c(VId, VIId)
+
+
+vdeg <- list(
+  Scout.induced = Scout.induced, 
+  Magenta.induced = Magenta.induced,
+  Scout.suppressed=Scout.suppressed,
+  Magenta.suppressed=Magenta.suppressed
+  )
+
+# All Venn 
+vud <- ggVennDiagram(vdeg, label="both",lwd = 0.3, lty = 1, color = "grey",  label_alpha = 0, edge_size = 0.3, label_size = 8, set_size = 6) + 
+  scale_fill_gradient(low = "white", high = "red") +
+  theme(legend.position = "none", title=element_text(size=20), plot.title = element_text(hjust = 0.5)) +
+  labs(title=paste("SDEGs ",go.id,sep=""))
+  #scale_fill_distiller(palette = "Reds", direction = 1) 
+   
+#pdf(file=paste(go.id,"-venn-diagram-all.pdf", sep=""), width=10, height=10)
+#print(vud)
+#dev.off()
+
+
+# Let's heatmap unique scout induced and suppressed
+
+gud <- unique(c(gu,gd))
+su  <- norm.counts[gud, ]
+
+su.sum <- t(apply(su, 1, function(row) c(mean(row[c(1,12,23,42,43,44)]),  #SCN3
+                                         mean(row[c(34,37,38,45,46,47)]),  #SIN3 
+                                         mean(row[c(11,13,27,60,61,74)]), #SCN8
+                                         mean(row[c(15,16,17,63,64,65)]), #SIN8
+                                         mean(row[c(24,25,26,71,72,73)]), #MCN3
+                                         mean(row[c(14,28,29,62,75,76)]), #MIN3
+                                         mean(row[c(30,31,32,77,78,79)]), #MCN8
+                                         mean(row[c(33,35,36,80,81,82)]) #MIN8
+                                         )))
+
+su.sum  <- su.sum - rowMeans(su.sum)
+
+colnames(su.sum) <- c("SCN3", "SIN3", "SCN8", "SIN8", "MCN3", 
+                      "MIN3", "MCN8", "MIN8")
+
+anno <- as.data.frame(colData(dds)[, c( "cultivar", "inoculated", "treatment", "dpi")])
+
+ x <- c("Scout", "Scout","Scout", "Scout", "Magenta", 
+        "Magenta","Magenta", "Magenta")
+ 
+ y <- colnames(su.sum)
+ 
+ z <- c("Control", "Inoc.","Control","Inoc.", "Control",
+        "Inoc.","Control","Inoc.")
+ 
+anno <- data.frame("cultivar" = x, "ptr"= z, row.names=y)
+
+anno$dpi <- c("3d","3d","8d","8d","3d","3d","8d","8d" )
+
+#anno$fungicide <- c("N","N","N","N","N","N","N","N" )
+
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(16)
+names <- sort(unique(clean_data$PR))
+new.list <- setNames(as.list(set), names)
+names(set) <- names
+
+# Specify colors
+ann_colors = list(
+    cultivar = c(Scout="firebrick",Magenta="blue"),
+    ptr = c(Control = "#1B9E77", Inoc. = "#D95F02"),
+    dpi = c("3d" = "#7570B3", "8d" = "#E7298A") )
+
+
+phud <- pheatmap(su.sum,  annotation_col = anno, fontsize_col = 12, 
+         fontsize_row = 10, show_rownames=FALSE, show_colnames=TRUE, 
+         cluster_rows = TRUE, cluster_cols = FALSE,  cutree_rows = 4, 
+         annotation_colors = ann_colors, main=go.id)
+
+pdf(file=paste(go.id,"-expression-scout-unique.pdf", sep=""), width=8, height=10)
+print(phud)
+dev.off()
+
+ip <- ggarrange(h,vud,vu,bpu,vd,bpd, labels=c("A", "B","C","D","E","F","G"), ncol=2, nrow = 3)
+
+pdf(file=paste(go.id,"-figure.pdf", sep=""), width=40, height=30)
+print(ip)
+dev.off()
+
+}
+
+```
+
+
+
+Correlation plot of manuscript table
+
+```{r, echo=FALSE}
+sdeg <- c(iprof$Row.names, gosf$Gene, pfamf$Gene)
+sdeg <- sort(unique(sdeg))
+sdeg.mat  <- norm.counts[ sdeg, ]
+
+sdegs.grp <- sdeg.mat[,c(1,12,23,42,43,44,
+                        34,37,38,45,46,47,
+                        11,13,27,60,61,74,
+                        15,16,17,63,64,65,
+                        24,25,26,71,72,73,
+                        14,28,29,62,75,76,
+                        30,31,32,77,78,79,
+                        33,35,36,80,81,82)]
+
+write.table(sdegs.grp, file="sdeg-cluster.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+
+sdem <- t(apply(sdeg.mat, 1, function(row) c(mean(row[c(1,12,23,42,43,44)]),  #SCN3
+                                         mean(row[c(34,37,38,45,46,47)]),  #SIN3
+                                         mean(row[c(11,13,27,60,61,74)]), #SCN8
+                                         mean(row[c(15,16,17,63,64,65)]), #SIN8
+                                         mean(row[c(24,25,26,71,72,73)]), #MCN3
+                                         mean(row[c(14,28,29,62,75,76)]), #MIN3
+                                         mean(row[c(30,31,32,77,78,79)]), #MCN8
+                                         mean(row[c(33,35,36,80,81,82)]) #MIN8
+                                         )))
+# just looking at expression
+#sdem  <- sdem - rowMeans(sdem)
+
+colnames(sdem) <- c("SCN3", "SIN3","SCN8", "SIN8", 
+                      "MCN3", "MIN3", "MCN8", "MIN8")
+
+#write.table(sdem, file="sdeg-cluster.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+
+ x <- c("Scout", "Scout", "Scout", "Scout",
+        "Magenta", "Magenta","Magenta", "Magenta")
+ y <- colnames(sdem)
+ z <- c("Control","Inoc.", "Control","Inoc.", 
+        "Control", "Inoc.","Control","Inoc." )
+anno <- data.frame("cultivar" = x, "ptr"= z, row.names=y)
+anno$dpi <- c("d3","d3","d8","d8","d3","d3","d8","d8")
+
+anno_colors = list(
+    cultivar = c(Scout="#0066CC", Magenta="firebrick"),
+    inoculated = c(Control = "#E0E0E0", Inoculated = "#A0A0A0"),
+    dpi = c(d3 = "#009900", d8 = "orange")
+)
+
+labs.row <- rownames(cor(sdem))
+#labs.row <- gsub("\\.","-",labs.row )
+
+labs.col <- colnames(cor(sdem))
+#labs.col <- gsub("\\.","-",labs.col )
+
+#pdf(file="correlation-defence.pdf",width = 10, height=12)
+pheatmap(cor(sdem), annotation_row = anno, show_rownames=T, show_colnames=T, fontsize=12, 
+         annotation_colors = anno_colors, labels_row=labs.row, labels_col=labs.col,
+         cluster_rows = TRUE)
+#dev.off()
+```
+
+
+Quick checks on interesting GO terms
+
+```{r, fig.width=10, fig.height=12, echo=FALSE}
+#go.id  <- "GO:0046406" # magnesium-protoporphyrin IX monomethyl ester (oxidative) cyclase activity 
+#go.id  <- "GO:0003777" # microtubule motor activity 
+#go.id  <- "GO:0031072"  # heat shock protein binding
+#go.id  <- "GO:0006355"  #TF
+#go.id  <- "GO:0055085"  #"Transporter"="GO:0055085"
+go.id  <-  "GO:0006952"  # "Defense"="GO:0006952"
+
+df <- subset(gos, go_id == go.id)
+
+ig <- unique(df$Row.names)
+su  <- norm.counts[ig, ]
+
+su.sum <- t(apply(su, 1, function(row) c(mean(row[c(1,12,23,42,43,44)]),  #SCN3
+                                         mean(row[c(34,37,38,45,46,47)]),  #SIN3 
+                                         mean(row[c(11,13,27,60,61,74)]), #SCN8
+                                         mean(row[c(15,16,17,63,64,65)]), #SIN8
+                                         mean(row[c(24,25,26,71,72,73)]), #MCN3
+                                         mean(row[c(14,28,29,62,75,76)]), #MIN3
+                                         mean(row[c(30,31,32,77,78,79)]), #MCN8
+                                         mean(row[c(33,35,36,80,81,82)])  #MIN8
+                                         )))
+
+su.sum  <- su.sum - rowMeans(su.sum)
+
+colnames(su.sum) <- c("SCN3",  "SIN3", "SCN8", "SIN8", "MCN3", 
+                      "MIN3", "MCN8", "MIN8")
+
+anno <- as.data.frame(colData(dds)[, c( "cultivar", "inoculated", "treatment", "dpi")])
+
+ x <- c("Scout", "Scout", "Scout", "Scout", 
+        "Magenta", "Magenta","Magenta", "Magenta")
+ 
+ y <- colnames(su.sum)
+ 
+ z <- c("Control", "Inoc.","Control","Inoc.",
+        "Control", "Inoc.","Control","Inoc.")
+ 
+anno <- data.frame("cultivar" = x, "ptr"= z, row.names=y)
+
+anno$dpi <- c("3d","3d","8d","8d","3d","3d","8d","8d" )
+
+#anno$fungicide <- c("N","N","N","N","N","N","N","N" )
+
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(16)
+names <- sort(unique(clean_data$PR))
+new.list <- setNames(as.list(set), names)
+names(set) <- names
+
+# Specify colors
+ann_colors = list(
+    cultivar = c(Scout="firebrick",Magenta="blue"),
+    ptr = c(Control = "#1B9E77", Inoc. = "#D95F02"),
+    dpi = c("3d" = "#7570B3", "8d" = "#E7298A") )
+
+
+phud <- pheatmap(su.sum,  annotation_col = anno, fontsize_col = 12, 
+         fontsize_row = 10, show_rownames=FALSE, show_colnames=TRUE, 
+         cluster_rows = TRUE, cluster_cols = FALSE,  cutree_rows = 5, 
+         annotation_colors = ann_colors, main=go.id)
+#phud
+pdf(file=paste(go.id,"-check.pdf", sep=""), width=8, height=14)
+print(phud)
+dev.off()
+
+
+```
+
+
+```{r}
+sessionInfo()
+```
+
+

@@ -1,0 +1,425 @@
+---
+title: "Wheat AGR RNAseq cluster analysis"
+author: "Paula Moolhuijzen"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output: 
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r path, echo=FALSE, message=F, warning=F}
+
+setwd(getwd())
+library(plotrix)
+library("ggplot2")
+library(ggrepel)
+library(tidyverse)
+library(ggparliament)
+require(lattice)
+library(GGally)
+library(RColorBrewer)
+library(data.table)
+```
+
+
+
+```{r,}
+
+annot <- read.table("annotation.txt", sep="\t", header = FALSE, stringsAsFactors=FALSE)
+len <- length(annot$V1)
+color <- colorRampPalette(brewer.pal(12, "Paired"))(len)
+annot$color <- color
+
+f <- list.files(path="clusters")
+
+for(x in f){
+  
+  
+  c <- paste("clusters/", x,"", sep="")
+  tbl <- read.table(c, sep="\t", header = FALSE, stringsAsFactors=FALSE)
+  
+  cnt <- tbl$V2
+  pdb <- tbl$V3
+  
+  df <- data.frame(value=cnt, group=pdb)
+  df$color <- annot$color[match(df$group, annot$V1)]
+  sum = sum(df$value)
+  df$percent = round(((df$value/sum)*100), digits=0)
+  
+  
+  ru_semicircle <- parliament_data(election_data = df,
+                                 type = "semicircle", # Parliament type
+                                 parl_rows = 10,      # Number of rows of the parliament
+                                 party_seats = df$value) # Seats per party
+
+  eplot<- ggplot(ru_semicircle, aes(x = x, y = y, colour = group)) +
+  geom_parliament_seats() + 
+    geom_parliament_bar(colour = color, party = group, label = FALSE) +
+  theme_ggparliament() +
+  labs(title = x) +
+  scale_colour_manual(values = ru_semicircle$color, 
+                      limits = ru_semicircle$group) + theme(legend.position = "none")
+  
+  #pdf(file=paste(x,"no_legend.pdf",sep=""), width=12, height = 5)
+
+  print(eplot)
+
+  #dev.off()
+
+}
+
+
+```
+
+Profile plots
+```{r,}
+
+zscore <- read.table("sdeg-cluster.txt_processed.tsv", sep="\t", header = TRUE, stringsAsFactors=FALSE)
+
+f <- list.files(path="clusterlist")
+cnt=0
+for(x in f){
+  cnt=cnt+1
+  
+  c <- paste("clusterlist/", x,"", sep="")
+  l <- readLines(c)
+  len = length(l)
+  #l <- readLines("clusterlist/1.cluster.list") # test
+  zscore.sub <- subset(zscore, zscore$Genes %in% l )
+  tit <- paste("Cluster ",cnt," (",len," genes)",sep="")
+  eplot <- ggparcoord(data = zscore.sub, scale="globalminmax", columns = 2:9, title = tit,
+                      groupColumn = 2) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 0),
+        axis.text.y = element_text(angle = 0),
+        axis.text=element_text(size=16),
+        axis.title=element_text(size=16)) + 
+    xlab("Groups") + ylab("Z-score") 
+  
+ # pdf(file=paste(x,".pdf",sep=""), width=6, height = 5)
+
+  print(eplot)
+
+# dev.off()
+
+}
+
+
+```
+
+Profile plots try two
+```{r,}
+
+zscore <- read.table("sdeg-cluster.txt_processed.tsv", sep="\t", header = TRUE, stringsAsFactors=FALSE)
+
+f <- list.files(path="clusterlist")
+cnt=0
+ls <- list()
+for(x in f){
+  cnt=cnt+1
+  
+  c <- paste("clusterlist/", x,"", sep="")
+  l <- readLines(c)
+  len = length(l)
+  zscore.sub <- subset(zscore, zscore$Genes %in% l )
+  cl <- paste("clust",x, sep="")
+  zscore.sub$Cluster <- paste("Clust",cnt, sep="")
+  ls[[cnt]] <- zscore.sub 
+}
+
+znew <- rbindlist(ls,use.names=TRUE)
+h <- c("Control3","Control8","Inoculated3","Inoculated8")
+mag <- znew[,c(1:5,10)]
+mag$Cultivar <- "Magenta"
+colnames(mag)[2:5]<- h
+scou <- znew[,c(1,6:10)]
+scou$Cultivar <- "Scout"
+colnames(scou)[2:5]<- h
+
+df <- rbindlist(list(mag,scou))
+```
+
+```{r, fig.width=14, fig.height=8}
+ df$Group <- paste(df$Cluster,":", df$Cultivar, sep="")
+eplot <-  ggparcoord(data = df, scale="globalminmax", scaleSummary = "mean",
+                     columns = 2:5, groupColumn = 8, 
+                     showPoints = FALSE, 
+                     boxplot = TRUE,
+                     mapping=aes(color=as.factor(Cluster))) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 0),
+        axis.text.y = element_text(angle = 0),
+        axis.text=element_text(size=16),
+        axis.title=element_text(size=16), legend.position = "none") + 
+    xlab("Groups") + ylab("Z-score") +
+  facet_wrap(~Group, ncol = 8) +
+   theme(strip.text.x = element_text(size = 14))
+  
+  #pdf(file="Cluster-facet.pdf",width=16, height = 8)
+
+  print(eplot)
+
+  #dev.off()
+
+
+```
+
+ add mean point
+
+```{r, fig.width=14, fig.height=8}
+
+h <- c("C.3","C.8","I.3","I.8")
+
+colnames(df)[2:5]<- h
+
+grp.lab <- c("MR", "S","MR", "S","MR", "S","MR", "S",
+             "MR", "S","MR", "S","MR", "S","MR", "S")
+names(grp.lab) <- c("Clust1:Magenta", "Clust1:Scout","Clust2:Magenta", "Clust2:Scout","Clust3:Magenta", "Clust3:Scout","Clust4:Magenta", "Clust4:Scout",
+                    "Clust5:Magenta", "Clust5:Scout","Clust6:Magenta", "Clust6:Scout","Clust7:Magenta", "Clust7:Scout","Clust8:Magenta", "Clust8:Scout")
+
+c3_means <- df %>%
+  dplyr::select(Group,C.3,C.8,I.3,I.8) %>%
+  group_by(Group) %>%
+  summarize_all(mean)  
+  
+df.means <- gather(c3_means, treatment, value, C.3:I.8, factor_key=TRUE)
+
+eplot <-  ggparcoord(data = df, scale="globalminmax", scaleSummary = "mean",
+                     columns = 2:5, groupColumn = 8, 
+                     showPoints = FALSE, 
+                     boxplot = FALSE,
+                     mapping=aes(color=as.factor(Cluster))) +
+    theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=0.5),
+        axis.text.y = element_text(angle = 0),
+        axis.text=element_text(size=16),
+        axis.title=element_text(size=16), legend.position = "bottom", legend.key.size = unit(2, 'cm'),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)) + 
+    xlab("Groups") + ylab("Z-score") +
+  geom_point(data = df.means, aes(x = treatment,y=value),
+             size = 2,
+             inherit.aes = FALSE) +
+  facet_wrap(~Group, ncol = 8, labeller = labeller(Group = grp.lab)) +
+   theme(strip.text.x = element_text(size = 14)) +
+  guides(colour = guide_legend(override.aes = list(size=10),nrow = 1)) +
+  scale_colour_discrete("Clusters") 
+  
+  
+  #pdf(file="Cluster-facet.pdf",width=16, height = 8)
+
+  print(eplot)
+
+  #dev.off()
+
+
+```
+
+  trying to clear bg and position legend
+
+```{r, fig.width=14, fig.height=8}
+
+
+
+eplot <-  ggparcoord(data = df, scale="globalminmax", scaleSummary = "mean",
+                     columns = 2:5, groupColumn = 8, 
+                     showPoints = FALSE, 
+                     boxplot = FALSE,
+                     mapping=aes(color=as.factor(Cluster))) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=0.5),
+        axis.text.y = element_text(angle = 0),
+        axis.text=element_text(size=16),
+        axis.title=element_text(size=16), legend.position = "bottom", legend.key.size = unit(2, 'cm'),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 14)) + 
+    xlab("Groups") + ylab("Z-score") +
+  geom_point(data = df.means, aes(x = treatment,y=value),
+             size = 2,
+             inherit.aes = FALSE) +
+  facet_wrap(~Group, ncol = 8, labeller = labeller(Group = grp.lab)) +
+   theme(strip.text.x = element_text(size = 14)) +
+  guides(colour = guide_legend(override.aes = list(size=12),nrow = 1)) +
+  scale_colour_discrete("Clusters") 
+  
+  
+  #pdf(file="Cluster-facet.pdf",width=16, height = 8)
+
+  print(eplot)
+
+  #dev.off()
+
+
+```
+
+ Merge mean and black plot
+
+```{r, fig.width=14, fig.height=8}
+
+
+
+eplot <-  ggparcoord(data = df, scale="globalminmax", scaleSummary = "mean",
+                     columns = 2:5, groupColumn = 8, 
+                     showPoints = FALSE, 
+                     boxplot = FALSE,
+                     mapping=aes(color="black")) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=0.5),
+        axis.text.y = element_text(angle = 0),
+        axis.text=element_text(size=16),
+        axis.title=element_text(size=16), legend.position = "none") + 
+    xlab("Groups") + ylab("Z-score") +
+  geom_point(data = df.means, aes(x = treatment,y=value),
+             size = 2,
+             inherit.aes = FALSE) +
+  facet_wrap(~Group, ncol = 8, labeller = labeller(Group = grp.lab)) +
+   theme(strip.text.x = element_text(size = 14))  
+
+#+  scale_colour_discrete("Clusters") 
+  
+  
+  #pdf(file="Cluster-facet.pdf",width=16, height = 8)
+
+  print(eplot)
+
+  #dev.off()
+
+
+```
+
+Table plots function
+```{r,fig.height=12,fig.width=8}
+
+p <- read.table("table-summary-bar.txt", sep="\t", header = TRUE, stringsAsFactors=FALSE)
+
+p$Group[p$Cultivar == "Scout" & p$dpi == "dpi3"] <- "I"
+p$Group[p$Cultivar == "Scout" & p$dpi == "dpi8"] <- "III"
+p$Group[p$Cultivar == "Magenta" & p$dpi == "dpi3"] <- "VI"
+p$Group[p$Cultivar == "Magenta" & p$dpi == "dpi8"] <- "VII"
+
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(42)
+
+#pdf(file=paste("Group.pdf",sep=""), width=10, height = 18)
+
+gp <- ggplot(p, aes(Group)) + 
+    theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=24, face="bold"), text=element_text(family="Calibri"), 
+        legend.text=element_text(size=18), legend.title=element_text(size=18, face="bold"),
+        strip.text = element_text(size = 18, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90"), legend.position = "right", panel.border = element_rect(fill = NA)) +
+ geom_bar(data = subset(p, Regulation == "Up"), 
+          aes(y = SDEG, fill = Function), stat = "identity", position="stack") +
+  geom_bar(data = subset(p, Regulation == "Down"), 
+           aes(y = -SDEG, fill = Function), stat = "identity", position="stack") + 
+  xlab("Group") + ylab("Number of Significant DE genes") +
+  guides(fill=guide_legend(nrow=42, title="Number of SDEGs in defence (terms)")) + 
+  geom_hline(yintercept = 0,colour = "grey90") + 
+  scale_fill_manual(values = set)
+  
+gp
+
+ ggsave(gp, file="Group-terms.png", width=10, height=12)
+
+
+
+```
+
+Table plots Category
+```{r,fig.height=10,fig.width=8}
+
+p <- read.table("table-summary-bar.txt", sep="\t", header = TRUE, stringsAsFactors=FALSE)
+
+p$Group[p$Cultivar == "Scout" & p$dpi == "dpi3"] <- "I"
+p$Group[p$Cultivar == "Scout" & p$dpi == "dpi8"] <- "III"
+p$Group[p$Cultivar == "Magenta" & p$dpi == "dpi3"] <- "VI"
+p$Group[p$Cultivar == "Magenta" & p$dpi == "dpi8"] <- "VII"
+
+len <- length(unique(p$Category))
+set <-  colorRampPalette(brewer.pal(12, "Paired"))(len)
+
+
+#pdf(file=paste("Group.pdf",sep=""), width=10, height = 18)
+
+gp <- ggplot(p, aes(Group)) + 
+    theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=24, face="bold"), text=element_text(family="Calibri"), 
+        legend.text=element_text(size=18), legend.title=element_text(size=18, face="bold"),
+        strip.text = element_text(size = 18, face = "bold"), 
+        strip.background=element_rect(fill="white"), panel.background = element_blank(), 
+        panel.grid = element_line(color="grey90"), legend.position = "right", panel.border = element_rect(fill = NA)) +
+ geom_bar(data = subset(p, Regulation == "Up"), 
+          aes(y = SDEG, fill = Category), stat = "identity", position="stack") +
+  geom_bar(data = subset(p, Regulation == "Down"), 
+           aes(y = -SDEG, fill = Category), stat = "identity", position="stack") + 
+  xlab("Group") + ylab("Number of Significant DE genes") +
+  guides(fill=guide_legend(nrow=len, title="Number of SDEGs in defence (category)")) + 
+  geom_hline(yintercept = 0,colour = "grey90") + 
+  scale_fill_manual(values = set)
+  
+gp
+
+ ggsave(gp, file="Group-category.png", width=10, height=12)
+
+
+
+```
+
+
+effort 24th August 2022
+```{r, echo=FALSE, warning=FALSE}
+
+zscore <- read.table("Results_04_Aug_22_1/Processed_Data/sdeg-cluster.txt_processed.tsv", sep="\t", header = TRUE, stringsAsFactors=FALSE)
+
+f <- list.files(path="Results_04_Aug_22_1/clusterlist")
+cnt=0
+for(x in f){
+  cnt=cnt+1
+  
+  c <- paste("Results_04_Aug_22_1/clusterlist/", x,"", sep="")
+  l <- readLines(c)
+  len = length(l)
+  #l <- readLines("Results_04_Aug_22_1/clusterlist/1.cluster.list") # test
+  zscore.sub <- subset(zscore, zscore$Genes %in% l )
+  tit <- paste("Cluster ",cnt," (",len," genes)",sep="")
+  
+  test <- zscore.sub[2:9]
+  df_means <- reshape2::melt(summarise_all(test, mean))
+  #colnames(df_means)[1]<- "group"
+  eplot <- ggparcoord(data = zscore.sub, scale="globalminmax", columns = 2:9, title = tit,
+                      #groupColumn = 2,
+                      #scaleSummary = "mean",
+                      showPoints = FALSE, 
+                      boxplot = FALSE) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 0),
+        axis.text.y = element_text(angle = 0),
+        axis.text=element_text(size=18),
+        axis.title=element_text(size=18), 
+        legend.position = "none",
+        axis.title.x=element_blank(),
+        plot.title = element_text(size=18)) + 
+    ylab("Z-score") +
+    geom_point(data = df_means, aes(x = variable,y=value),
+             size = 2,
+             color="red",
+             inherit.aes = FALSE)
+  
+  
+  pdf(file=paste(x,".pdf",sep=""), width=6, height = 4)
+
+  print(eplot)
+
+ dev.off()
+
+}
+
+
+```
+
+
+```{r}
+sessionInfo()
+```
+
+
